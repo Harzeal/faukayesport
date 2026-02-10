@@ -15,9 +15,9 @@ const geistMono = Geist_Mono({
 export const metadata = {
   title: 'Faukay Esport',
   description: 'Sistem Manajemen Inventaris Esport',
-  // Tambahkan baris di bawah ini
   verification: {
-    google: 'Qy0DRaSCD9UFGrQhSWz5r8-XsKWQVBo7UlvYYLGMDyk',
+    // HAPUS tag <meta... />, SISAKAN kode uniknya saja seperti ini:
+    google: 'Qy0DRaSCD9UFGrQhSWz5r8-XsKWQVBo7UlvYYLGMDyk', 
   },
 }
 export default function RootLayout({
