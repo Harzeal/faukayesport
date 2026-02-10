@@ -17,7 +17,7 @@ export const metadata = {
   description: 'Sistem Manajemen Inventaris Esport',
   // Tambahkan baris di bawah ini
   verification: {
-    google: '<meta name="google-site-verification" content="Qy0DRaSCD9UFGrQhSWz5r8-XsKWQVBo7UlvYYLGMDyk" />',
+    google: 'Qy0DRaSCD9UFGrQhSWz5r8-XsKWQVBo7UlvYYLGMDyk',
   },
 }
 export default function RootLayout({
