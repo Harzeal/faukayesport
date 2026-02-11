@@ -5,7 +5,7 @@ export async function POST(request: Request) {
 
   // Memasukkan data karyawan baru ke tabel 'pengguna'
   const { data, error } = await supabase
-    .from('pengguna')
+    .from('User')
     .insert([{ 
         "Nama belakang": username, 
         "Kata sandi": password, 
