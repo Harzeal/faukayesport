@@ -3,17 +3,17 @@ import { supabase } from '@/lib/supabase';
 export async function POST(request: Request) {
   const { username, password } = await request.json();
 
-  // Mencari user di tabel 'users' pada Supabase
+  // Gunakan nama tabel 'pengguna' dan nama kolom sesuai gambar kamu
   const { data: user, error } = await supabase
-    .from('users')
+    .from('User') // Sesuai nama di gambar image_49b403.png
     .select('*')
-    .eq('username', username)
-    .eq('password', password) // Catatan: Sebaiknya gunakan hashing password nantinya
+    .eq('Nama belakang', username) // Sesuai kolom di image_49b403.png
+    .eq('Kata sandi', password) 
     .single();
 
   if (user) {
-    return Response.json({ success: true, message: "Login Berhasil" });
+    return Response.json({ success: true, user });
   } else {
-    return Response.json({ success: false, message: "Data tidak ditemukan" }, { status: 401 });
+    return Response.json({ success: false, message: "Akun tidak ditemukan" }, { status: 401 });
   }
 }
