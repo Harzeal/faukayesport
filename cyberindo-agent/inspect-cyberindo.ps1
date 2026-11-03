@@ -1,57 +1,50 @@
 # =============================================================================
-# FAUKAY E-SPORT — CyberIndo (gcbServer.exe) Deep Inspector
-# Membaca isi C:\Program Files (x86)\GBillingServer\server.ini, semua file di
-# folder GBillingServer, ProgramData, dan koneksi port lokal gcbServer.exe
+# FAUKAY E-SPORT — Inspector Khusus D:\DataBaseBilling\GBillingServer
 # =============================================================================
 
 Write-Host "============================================================" -ForegroundColor DarkYellow
-Write-Host "   FAUKAY E-SPORT - GCBSERVER DEEP INSPECTOR (PC KASIR)     " -ForegroundColor Yellow
+Write-Host "   FAUKAY E-SPORT - CEK D:\DataBaseBilling\GBillingServer   " -ForegroundColor Yellow
 Write-Host "============================================================" -ForegroundColor DarkYellow
 Write-Host ""
 
-$gcbDir = "C:\Program Files (x86)\GBillingServer"
-$iniPath = "$gcbDir\server.ini"
+$dataDir = "D:\DataBaseBilling\GBillingServer"
 
-Write-Host "[1/4] Isi File server.ini:" -ForegroundColor Cyan
-if (Test-Path $iniPath) {
-    Get-Content $iniPath | ForEach-Object { Write-Host "  $_" -ForegroundColor Green }
-} else {
-    Write-Host "  File server.ini tidak ditemukan di $iniPath" -ForegroundColor Yellow
-}
-
-Write-Host ""
-Write-Host "[2/4] Semua File di dalam $gcbDir :" -ForegroundColor Cyan
-if (Test-Path $gcbDir) {
-    Get-ChildItem -Path $gcbDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-        Write-Host "  $($_.FullName) ($($_.Length) bytes)" -ForegroundColor Gray
+Write-Host "[1/3] Daftar Semua File di $dataDir :" -ForegroundColor Cyan
+if (Test-Path $dataDir) {
+    Get-ChildItem -Path $dataDir -Recurse -File | Sort-Object LastWriteTime -Descending | ForEach-Object {
+        Write-Host ("  {0,-62} | {1,10} bytes | Update: {2}" -f $_.FullName, $_.Length, $_.LastWriteTime.ToString("HH:mm:ss dd/MM/yyyy")) -ForegroundColor Green
     }
+} else {
+    Write-Host "  Folder $dataDir tidak ditemukan!" -ForegroundColor Red
 }
 
 Write-Host ""
-Write-Host "[3/4] Mencari Database GBilling di C:\ProgramData & AppData:" -ForegroundColor Cyan
-$extraPaths = @(
-    "C:\ProgramData",
-    "$env:LOCALAPPDATA",
-    "$env:APPDATA"
-)
-foreach ($ep in $extraPaths) {
-    Get-ChildItem -Path $ep -Directory -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -match "gbilling|cyber|gcb|gcafe|billing"
-    } | ForEach-Object {
-        Write-Host "  -> Folder Data: $($_.FullName)" -ForegroundColor Green
-        Get-ChildItem -Path $_.FullName -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-            Write-Host "     $($_.FullName) ($($_.Length) bytes)" -ForegroundColor Gray
+Write-Host "[2/3] Cek Header File Database (.db / .sqlite / .dat / .ini / .xml):" -ForegroundColor Cyan
+if (Test-Path $dataDir) {
+    Get-ChildItem -Path $dataDir -Recurse -File | ForEach-Object {
+        try {
+            $bytes = [System.IO.File]::ReadAllBytes($_.FullName) | Select-Object -First 16
+            $ascii = -join ($bytes | ForEach-Object { if ($_ -ge 32 -and $_ -le 126) { [char]$_ } else { '.' } })
+            Write-Host ("  {0,-40} -> Header: [{1}]" -f $_.Name, $ascii) -ForegroundColor Gray
+        } catch {
+            Write-Host ("  {0,-40} -> (Sedang dipakai proses aktif, dicopy sementara...)" -f $_.Name) -ForegroundColor Yellow
+            try {
+                $tmp = "$env:TEMP\$($_.Name).tmp"
+                Copy-Item $_.FullName $tmp -Force
+                $bytes = [System.IO.File]::ReadAllBytes($tmp) | Select-Object -First 16
+                $ascii = -join ($bytes | ForEach-Object { if ($_ -ge 32 -and $_ -le 126) { [char]$_ } else { '.' } })
+                Write-Host ("  {0,-40} -> Header: [{1}]" -f $_.Name, $ascii) -ForegroundColor Green
+                Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+            } catch {}
         }
     }
 }
 
 Write-Host ""
-Write-Host "[4/4] Port Jaringan yang dipakai gcbServer.exe:" -ForegroundColor Cyan
-$gcbProc = Get-Process -Name "gcbServer" -ErrorAction SilentlyContinue
-if ($gcbProc) {
-    $pidVal = $gcbProc.Id
-    Write-Host "  gcbServer aktif dengan PID: $pidVal (Judul: $($gcbProc.MainWindowTitle))" -ForegroundColor Green
-    Get-NetTCPConnection -OwningProcess $pidVal -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, State | Format-Table -AutoSize
-} else {
-    Write-Host "  gcbServer sedang tidak berjalan." -ForegroundColor Red
-}
+Write-Host "[3/3] Daftar IP PC Client yang Sedang Terhubung ke Billing (Port 6895):" -ForegroundColor Cyan
+$conns = Get-NetTCPConnection -LocalPort 6895 -State Established -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty RemoteAddress -Unique |
+    Sort-Object { [version]$_ }
+
+Write-Host "  Total IP PC Client Aktif Terhubung: $($conns.Count) PC" -ForegroundColor Green
+Write-Host "  Daftar IP: $($conns -join ', ')" -ForegroundColor Gray
