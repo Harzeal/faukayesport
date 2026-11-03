@@ -398,14 +398,6 @@ export default function FaukayEsportPage() {
             <Terminal size={15} />
             <span>Cara Konek CyberIndo</span>
           </button>
-
-          <a
-            href="/login"
-            className="btn-tactical"
-            style={{ textDecoration: 'none' }}
-          >
-            <span>Login Staff</span>
-          </a>
         </div>
       </header>
 
