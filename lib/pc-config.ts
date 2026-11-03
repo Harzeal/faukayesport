@@ -4,7 +4,7 @@ import { PCUnit, PCZone } from '@/types/pc';
  * Default 2 nomor PC di rentang VIP (07-36) yang dilewati sehingga total VIP = 28 PC.
  * Dapat diubah kapan saja langsung dari pengaturan UI website atau dari CyberIndo Agent.
  */
-export const DEFAULT_SKIPPED_VIP_NUMBERS = [13, 14];
+export const DEFAULT_SKIPPED_VIP_NUMBERS = [24];
 
 export const ZONE_SPECS: Record<PCZone, { title: string; badge: string; specs: string; rateInfo: string }> = {
   VVIP: {
@@ -93,13 +93,20 @@ export function parseCyberIndoTime(raw: string | number | null | undefined): num
   const text = String(raw).trim();
   if (!text || text === '-' || text === '00:00:00' || text === '00:00') return 0;
 
+  // Format CyberIndo Indonesia: "6j 59m", "1j 8m", "30m", "6m"
+  const jmMatch = text.match(/(?:(\d+)\s*j\s*)?(?:(\d+)\s*m)/i);
+  if (jmMatch && (jmMatch[1] || jmMatch[2])) {
+    const hours = jmMatch[1] ? parseInt(jmMatch[1], 10) : 0;
+    const minutes = jmMatch[2] ? parseInt(jmMatch[2], 10) : 0;
+    return hours * 3600 + minutes * 60;
+  }
+
   // Format HH:MM:SS atau MM:SS
   const colonParts = text.split(':').map((p) => parseInt(p.trim(), 10));
   if (colonParts.length === 3 && colonParts.every((n) => !Number.isNaN(n))) {
     return colonParts[0] * 3600 + colonParts[1] * 60 + colonParts[2];
   }
   if (colonParts.length === 2 && colonParts.every((n) => !Number.isNaN(n))) {
-    // Di CyberIndo biasanya HH:MM jika hanya 2 segmen, atau MM:SS
     return colonParts[0] * 3600 + colonParts[1] * 60;
   }
 
