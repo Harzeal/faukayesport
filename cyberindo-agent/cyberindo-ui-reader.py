@@ -1,23 +1,22 @@
 """
 FAUKAY E-SPORT — CyberIndo Pro Server v1.8.5 (gcbServer.exe) Live Reader
 ========================================================================
-Mendukung:
-1. Pembacaan Folder Database (D:/DataBaseBilling/GBillingServer)
-2. Pembacaan 702 Elemen UI & Legacy Accessible Properties (gcbServer.exe)
-3. Pembacaan Memori Proses (RAM QString UTF-16LE / UTF-8) gcbServer.exe
-4. Format waktu CyberIndo Indonesia: "6j 59m", "1j 8m", "30m", "6m"
+Membaca:
+1. Isi file log aktif D:\\DataBaseBilling\\GBillingServer\\Logs\\gbServer-YYYYMMDD.log
+2. Struktur C++ Workstation / QString Pointer di RAM gcbServer.exe
+3. Elemen UI pada tab 'Komputer'
 """
 
 import argparse
 import ctypes
 from ctypes import wintypes
+import glob
 import os
 import re
-import sqlite3
+import struct
 import subprocess
 import time
 import warnings
-import requests
 
 warnings.filterwarnings("ignore")
 
@@ -26,20 +25,6 @@ try:
     HAS_PYWINAUTO = True
 except ImportError:
     HAS_PYWINAUTO = False
-
-
-def normalize_api_url(raw_url: str) -> str:
-    url = (raw_url or "").strip()
-    if not url:
-        url = "https://faukayesport-fky.vercel.app"
-    if not url.startswith("http://") and not url.startswith("https://"):
-        if "localhost" in url or "127.0.0.1" in url or url.startswith("192.168."):
-            url = "http://" + url
-        else:
-            url = "https://" + url
-    if not url.endswith("/api/pcs"):
-        url = url.rstrip("/") + "/api/pcs"
-    return url
 
 
 def get_gcbserver_pid():
@@ -57,144 +42,42 @@ def get_gcbserver_pid():
     return None
 
 
-def parse_cyberindo_time_to_seconds(text: str) -> int:
-    """
-    Format CyberIndo Pro Indonesia (Nation=ID):
-    - '6j 59m' -> 6 jam 59 menit
-    - '2j 0m'  -> 2 jam 0 menit
-    - '30m'    -> 30 menit
-    - '6m'     -> 6 menit
-    - '01:45:20' -> 1 jam 45 menit 20 detik
-    """
-    if not text:
-        return 0
-
-    # 1. Cek pola "6j 59m" atau "1j 8m"
-    jm = re.search(r"\b(\d{1,2})\s*j\s*(\d{1,2})\s*m\b", text, re.IGNORECASE)
-    if jm:
-        h, m = int(jm.group(1)), int(jm.group(2))
-        return h * 3600 + m * 60
-
-    # 2. Cek pola hanya menit "30m" atau "6m"
-    m_only = re.search(r"\b(\d{1,3})\s*m\b", text, re.IGNORECASE)
-    if m_only:
-        return int(m_only.group(1)) * 60
-
-    # 3. Cek pola HH:MM:SS
-    hms = re.search(r"\b(\d{1,2}):(\d{2}):(\d{2})\b", text)
-    if hms:
-        h, m, s = map(int, hms.groups())
-        return h * 3600 + m * 60 + s
-
-    return 0
-
-
-def inspect_database_folder():
-    """Periksa semua file di D:/DataBaseBilling/GBillingServer dari server.ini."""
-    data_folder = r"D:\DataBaseBilling\GBillingServer"
-    ini_path = r"C:\Program Files (x86)\GBillingServer\server.ini"
-
-    if os.path.exists(ini_path):
-        try:
-            with open(ini_path, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    if line.strip().lower().startswith("datafolder="):
-                        data_folder = line.split("=", 1)[1].strip().replace("/", "\\")
-        except Exception:
-            pass
-
-    print(f"\n[1/3] Memeriksa Folder Database: {data_folder}")
-    if not os.path.exists(data_folder):
-        print(f"  -> Folder {data_folder} tidak ditemukan.")
+def inspect_latest_log_file():
+    """Baca baris terakhir & baris penting dari D:\\DataBaseBilling\\GBillingServer\\Logs\\gbServer-*.log"""
+    log_dir = r"D:\DataBaseBilling\GBillingServer\Logs"
+    print(f"\n[1/3] Memeriksa File Log Terbaru di: {log_dir}")
+    if not os.path.exists(log_dir):
+        print("  -> Folder Logs tidak ditemukan.")
         return
 
-    for root, dirs, files in os.walk(data_folder):
-        for fname in files:
-            fpath = os.path.join(root, fname)
-            try:
-                sz = os.path.getsize(fpath)
-                mtime = time.strftime("%H:%M:%S %d/%m", time.localtime(os.path.getmtime(fpath)))
-                header = b""
-                with open(fpath, "rb") as bf:
-                    header = bf.read(16)
-                is_sqlite = header.startswith(b"SQLite format 3")
-                tag = "SQLITE-OPEN" if is_sqlite else f"HEADER:{header[:10]!r}"
-                print(f"  -> {fpath} ({sz} bytes | Update: {mtime} | {tag})")
-
-                if is_sqlite:
-                    try:
-                        conn = sqlite3.connect(f"file:{fpath}?mode=ro", uri=True)
-                        cur = conn.cursor()
-                        tables = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-                        print(f"     [TABEL SQLITE]: {tables}")
-                        conn.close()
-                    except Exception as sqle:
-                        print(f"     [INFO SQLITE]: {sqle}")
-            except Exception as e:
-                print(f"  -> {fpath} (Error baca: {e})")
-
-
-def inspect_ui_elements_deep(pid: int):
-    """Periksa properti mendalam dari 702 elemen UI di gcbServer.exe."""
-    print(f"\n[2/3] Memeriksa Struktur 702 Elemen UI gcbServer.exe (PID: {pid})...")
-    if not HAS_PYWINAUTO:
+    log_files = sorted(glob.glob(os.path.join(log_dir, "gbServer-*.log")), key=os.path.getmtime, reverse=True)
+    if not log_files:
+        print("  -> Tidak ada file gbServer-*.log.")
         return
 
+    latest = log_files[0]
+    print(f"  -> File Log Aktif: {latest} ({os.path.getsize(latest)} bytes)")
     try:
-        app = Application(backend="uia").connect(process=pid)
-        win = app.windows()[0]
-        descendants = win.descendants()
-        print(f"  -> Total Elemen UI: {len(descendants)}")
+        with open(latest, "r", encoding="utf-8", errors="ignore") as f:
+            lines = [line.strip() for line in f if line.strip()]
 
-        class_counts = {}
-        non_empty_samples = []
+        print(f"  -> Total Baris Log: {len(lines)}")
+        print("  -> 20 Baris Terakhir di Log:")
+        for ln in lines[-20:]:
+            print("    ", ln[:140])
 
-        for idx, d in enumerate(descendants):
-            try:
-                ei = d.element_info
-                cname = getattr(ei, "class_name", "") or ""
-                ctype = getattr(ei, "control_type", "") or ""
-                ename = getattr(ei, "name", "") or ""
-                key = f"{ctype}({cname})"
-                class_counts[key] = class_counts.get(key, 0) + 1
-
-                # Cek legacy IAccessible properties jika ada
-                leg_val = ""
-                leg_desc = ""
-                try:
-                    lp = d.legacy_properties()
-                    leg_val = str(lp.get("Value", "") or "").strip()
-                    leg_desc = str(lp.get("Description", "") or "").strip()
-                    if not ename:
-                        ename = str(lp.get("Name", "") or "").strip()
-                except Exception:
-                    pass
-
-                combined = " | ".join(x for x in [ename, leg_val, leg_desc] if x)
-                if combined and len(non_empty_samples) < 35:
-                    rect = getattr(ei, "rectangle", None)
-                    r_str = f"({rect.left},{rect.top})" if rect else ""
-                    non_empty_samples.append(f"#{idx} [{key}] {r_str}: {combined}")
-            except Exception:
-                continue
-
-        print(f"  -> Ringkasan Tipe Elemen: {class_counts}")
-        print(f"  -> Elemen dengan Teks/Value ({len(non_empty_samples)} sampel pertama):")
-        for s in non_empty_samples:
-            print("    ", s)
+        vip_lines = [ln for ln in lines if re.search(r"VIP|192\.168\.10\.|login|order|time|session", ln, re.I)]
+        print(f"  -> 15 Baris Log Terkait PC / IP / Session (dari total {len(vip_lines)} cocok):")
+        for ln in vip_lines[-15:]:
+            print("    ", ln[:140])
     except Exception as e:
-        print(f"  -> Gagal inspeksi UI mendalam: {e}")
+        print(f"  -> Gagal baca log: {e}")
 
 
-# Konstanta Windows API untuk ReadProcessMemory
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_READ = 0x0010
 MEM_COMMIT = 0x1000
-PAGE_READWRITE = 0x04
-PAGE_READONLY = 0x02
-PAGE_WRITECOPY = 0x08
-PAGE_EXECUTE_READ = 0x20
-PAGE_EXECUTE_READWRITE = 0x40
+READABLE_PAGES = (0x02, 0x04, 0x08, 0x20, 0x40)
 
 
 class MEMORY_BASIC_INFORMATION(ctypes.Structure):
@@ -209,141 +92,131 @@ class MEMORY_BASIC_INFORMATION(ctypes.Structure):
     ]
 
 
-def scan_gcbserver_memory(pid: int, debug_first: bool = False):
+def map_qstrings_and_structs(pid: int):
     """
-    Membaca string UTF-16LE (Qt4 QString) dan ASCII langsung dari RAM gcbServer.exe!
-    Mencari teks kartu PC seperti 'VIP-13', 'VVIP-05', '6j 59m', '30m', dll.
+    Melacak pointer Qt4 QStringData di RAM gcbServer.exe untuk menghubungkan
+    Nama PC ('VIP-13', 'VVIP-05') dengan Sisa Waktu ('6j 59m', '2j 20m') dan Username!
     """
+    print(f"\n[2/3] Melacak Tabel Objek PC & Pointer QString di RAM gcbServer.exe (PID: {pid})...")
     kernel32 = ctypes.windll.kernel32
     h_proc = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
     if not h_proc:
-        if debug_first:
-            print("[WARN] OpenProcess gagal. Pastikan dijalankan sebagai Administrator.")
-        return {}
+        print("  -> Gagal OpenProcess.")
+        return
 
     mbi = MEMORY_BASIC_INFORMATION()
     addr = 0
-    max_addr = 0x7FFFFFFF  # gcbServer.exe adalah aplikasi 32-bit!
+    max_addr = 0x7FFFFFFF
 
-    found_utf16_snippets = []
-    time_strings_found = []
-
-    # Regex UTF-16LE untuk mencari "VIP-" atau "VVIP-"
-    vip_pattern_u16 = re.compile(b"(?:V\x00)?V\x00I\x00P\x00-\x00\d\x00\d\x00")
-    time_pattern_u16 = re.compile(
-        b"(?:\d\x00\d?\x00j\x00 \x00)?\d\x00\d?\x00m\x00"
-    )
-
+    regions = []
     try:
         while addr < max_addr:
-            res = kernel32.VirtualQueryEx(
-                h_proc, ctypes.c_void_p(addr), ctypes.byref(mbi), ctypes.sizeof(mbi)
-            )
+            res = kernel32.VirtualQueryEx(h_proc, ctypes.c_void_p(addr), ctypes.byref(mbi), ctypes.sizeof(mbi))
             if not res:
                 break
-
-            readable = mbi.State == MEM_COMMIT and (
-                mbi.Protect in (PAGE_READWRITE, PAGE_READONLY, PAGE_WRITECOPY, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE)
-            )
-
-            if readable and 0 < mbi.RegionSize <= 32 * 1024 * 1024:
+            if mbi.State == MEM_COMMIT and mbi.Protect in READABLE_PAGES and 0 < mbi.RegionSize <= 32 * 1024 * 1024:
                 buf = ctypes.create_string_buffer(mbi.RegionSize)
                 bytes_read = ctypes.c_size_t(0)
                 if kernel32.ReadProcessMemory(
-                    h_proc,
-                    ctypes.c_void_p(mbi.BaseAddress),
-                    buf,
-                    mbi.RegionSize,
-                    ctypes.byref(bytes_read),
+                    h_proc, ctypes.c_void_p(mbi.BaseAddress), buf, mbi.RegionSize, ctypes.byref(bytes_read)
                 ):
-                    raw = buf.raw[: bytes_read.value]
-
-                    if debug_first:
-                        for m in vip_pattern_u16.finditer(raw):
-                            start = max(0, m.start() - 64)
-                            end = min(len(raw), m.end() + 160)
-                            chunk = raw[start:end].decode("utf-16le", errors="ignore")
-                            clean_chunk = re.sub(r"[\x00-\x1f]+", " | ", chunk).strip(" |")
-                            if len(found_utf16_snippets) < 40 and clean_chunk not in found_utf16_snippets:
-                                found_utf16_snippets.append(clean_chunk)
-
-                        for tm in time_pattern_u16.finditer(raw):
-                            t_str = tm.group(0).decode("utf-16le", errors="ignore")
-                            if any(c.isdigit() for c in t_str):
-                                start = max(0, tm.start() - 96)
-                                end = min(len(raw), tm.end() + 96)
-                                context = raw[start:end].decode("utf-16le", errors="ignore")
-                                clean_ctx = re.sub(r"[\x00-\x1f]+", " | ", context).strip(" |")
-                                if ("j " in t_str or "m" in t_str) and len(time_strings_found) < 40:
-                                    if re.search(r"\b(?:\d+j\s*)?\d+m\b", clean_ctx):
-                                        time_strings_found.append(clean_ctx)
-
+                    regions.append((mbi.BaseAddress, buf.raw[: bytes_read.value]))
             addr = (mbi.BaseAddress or 0) + mbi.RegionSize
     finally:
         kernel32.CloseHandle(h_proc)
 
-    if debug_first:
-        print(f"\n[3/3] Hasil Scan Memori (RAM) gcbServer.exe:")
-        print(f"  -> Ditemukan {len(found_utf16_snippets)} blok memori nama PC (VIP/VVIP):")
-        for s in found_utf16_snippets[:15]:
-            print("     [MEM-PC]  ", s[:120])
-        print(f"  -> Ditemukan {len(time_strings_found)} blok memori sisa waktu (Xj Ym):")
-        for t in time_strings_found[:20]:
-            print("     [MEM-TIME]", t[:120])
+    print(f"  -> Berhasil membaca {len(regions)} region memori.")
 
-    return {}
+    # 1. Cari alamat QStringData untuk waktu aktif (misal "5j 19m", "2j 20m", "1j 53m", dll.)
+    time_re = re.compile(b"\x00((?:\d\x00\d?\x00j\x00 \x00)?\d\x00\d?\x00m\x00)\x00\x00")
+    pc_re = re.compile(b"((?:V\x00)?V\x00I\x00P\x00-\x00\d\x00\d\x00)\x00\x00")
 
+    qstring_time_headers = {}  # header_addr -> time_str
+    qstring_pc_headers = {}    # header_addr -> pc_str
 
-def get_active_client_ips_port_6895():
-    """Fallback deteksi koneksi TCP aktif di port 6895 milik gcbServer.exe."""
-    active_ips = set()
-    try:
-        out = subprocess.check_output(["netstat", "-ano"], text=True, stderr=subprocess.DEVNULL)
-        for line in out.splitlines():
-            if ":6895 " in line and "ESTABLISHED" in line.upper():
-                parts = line.split()
-                if len(parts) >= 3:
-                    remote_ip = parts[2].split(":")[0]
-                    active_ips.add(remote_ip)
-    except Exception:
-        pass
-    return sorted(active_ips)
+    for base, raw in regions:
+        for m in time_re.finditer(raw):
+            str_offset = m.start(1)
+            t_str = m.group(1).decode("utf-16le", errors="ignore")
+            if not re.match(r"^(?:\d{1,2}j )?\d{1,2}m$", t_str):
+                continue
+            # Di Qt4 32-bit, QStringData header berada 16 atau 20 byte sebelum karakter pertama
+            for hdr_delta in (16, 20):
+                if str_offset >= hdr_delta:
+                    hdr_addr = base + str_offset - hdr_delta
+                    qstring_time_headers[hdr_addr] = t_str
+
+        for m in pc_re.finditer(raw):
+            str_offset = m.start(1)
+            p_str = m.group(1).decode("utf-16le", errors="ignore").upper()
+            for hdr_delta in (16, 20):
+                if str_offset >= hdr_delta:
+                    hdr_addr = base + str_offset - hdr_delta
+                    qstring_pc_headers[hdr_addr] = p_str
+
+    print(f"  -> Ditemukan {len(qstring_pc_headers)} kandidat QStringData PC & {len(qstring_time_headers)} QStringData Waktu.")
+
+    # Buat helper untuk baca QString dari pointer 32-bit (QStringData*)
+    region_Intervals = [(b, b + len(r), r) for b, r in regions]
+
+    def read_qstring_at_ptr(ptr_val: int):
+        if ptr_val < 0x10000 or ptr_val > 0x7FFF0000:
+            return None
+        for b_start, b_end, r_bytes in region_Intervals:
+            if b_start <= ptr_val < b_end - 32:
+                off = ptr_val - b_start
+                # Cek apakah struktur QStringData valid (ref > 0, sizeantara 1..64)
+                ref, alloc, size, data_ptr = struct.unpack_from("<iiiI", r_bytes, off)
+                if 1 <= size <= 64 and (ptr_val + 16 <= data_ptr <= ptr_val + 24):
+                    str_off = data_ptr - b_start
+                    if str_off + size * 2 <= len(r_bytes):
+                        s = r_bytes[str_off : str_off + size * 2].decode("utf-16le", errors="ignore")
+                        if all(32 <= ord(c) <= 126 for c in s):
+                            return s
+        return None
+
+    # 2. Cari objek C++ di memori yang memiliki pointer ke QStringData Waktu!
+    time_hdr_set = set(qstring_time_headers.keys())
+    matched_structs = []
+
+    for base, raw in regions:
+        # Scan setiap 4-byte aligned dword
+        limit = len(raw) - 4
+        for off in range(0, limit, 4):
+            val = struct.unpack_from("<I", raw, off)[0]
+            if val in time_hdr_set:
+                t_str = qstring_time_headers[val]
+                # Periksa semua pointer QString di sekitar struct ini (-128 s/d +128 bytes)
+                nearby_strings = []
+                scan_start = max(0, off - 160)
+                scan_end = min(len(raw) - 4, off + 160)
+                for sub_off in range(scan_start, scan_end, 4):
+                    sub_ptr = struct.unpack_from("<I", raw, sub_off)[0]
+                    qs = read_qstring_at_ptr(sub_ptr)
+                    if qs:
+                        rel = sub_off - off
+                        nearby_strings.append(f"[{rel:+d}]='{qs}'")
+                if len(nearby_strings) >= 2:
+                    sig = f"TIME='{t_str}' -> " + ", ".join(nearby_strings)
+                    if sig not in matched_structs:
+                        matched_structs.append(sig)
+
+    print(f"  -> Ditemukan {len(matched_structs)} C++ Struct yang menunjuk ke QString Waktu:")
+    for ms in matched_structs[:30]:
+        print("    ", ms[:150])
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Faukay E-Sport gcbServer.exe Live Reader")
-    parser.add_argument("--url", default="https://faukayesport-fky.vercel.app/api/pcs", help="URL API Website")
-    parser.add_argument("--secret", default="", help="Secret key FAUKAY_SYNC_SECRET")
-    parser.add_argument("--interval", type=int, default=4, help="Interval update (detik)")
-    args = parser.parse_args()
-
-    api_url = normalize_api_url(args.url)
-
-    print("============================================================")
-    print(" FAUKAY E-SPORT — GCBSERVER (CYBERINDO v1.8.5) LIVE READER")
-    print(f" Target API : {api_url}")
-    print(f" Interval   : {args.interval} detik")
-    print("============================================================")
-
     pid = get_gcbserver_pid()
     if not pid:
-        print("[ERROR] gcbServer.exe tidak ditemukan! Pastikan CyberIndo Billing Server berjalan.")
+        print("[ERROR] gcbServer.exe tidak ditemukan!")
         return
 
-    # Jalankan 3 diagnostik otomatis pada awal start
-    inspect_database_folder()
-    inspect_ui_elements_deep(pid)
-    scan_gcbserver_memory(pid, debug_first=True)
-
-    active_ips = get_active_client_ips_port_6895()
-    print(f"\n[INFO] Total IP PC Client ESTABLISHED di Port 6895 saat ini: {len(active_ips)} IP")
-    print(f"       Daftar IP: {', '.join(active_ips)}")
+    inspect_latest_log_file()
+    map_qstrings_and_structs(pid)
     print("\n============================================================")
-    print(" Silakan foto hasil [1/3], [2/3], dan [3/3] di atas!")
+    print(" Selesai! Silakan foto hasil [1/3] dan [2/3] di atas.")
     print("============================================================")
-
-    while True:
-        time.sleep(args.interval)
 
 
 if __name__ == "__main__":
