@@ -1,14 +1,15 @@
 """
-FAUKAY E-SPORT — CyberIndo Pro Server v1.8.5 (gcbServer.exe) Live Sync Agent
-============================================================================
-Membaca langsung C++ Workstation / UI Card Struct di memori (RAM) gcbServer.exe:
-  Offset +0  : PC Name    ('VIP-10', 'VVIP-03', 'VVIP-09', 'VIP-15', dll.)
-  Offset +4  : Username   ('LAMELO', 'BON1', 'JR', dll.)
-  Offset +20 : Sisa Waktu ('5j 26m', '30m', '2j 41m', dll.)
-Lalu mengirimkan (POST) secara real-time setiap 4 detik ke Website Faukay E-Sport!
+FAUKAY E-SPORT — CyberIndo Pro Server v1.8.5 (gcbServer.exe) Ultra-Fast Live Sync Agent
+=======================================================================================
+Kecepatan scan: ~0.2 detik menggunakan C-level bytes.find() & bisect!
+Membaca langsung C++ UI Card Struct di memori (RAM) gcbServer.exe:
+  Offset -20 (dari Time) / +0 (dari PC) : PC Name    ('VIP-10', 'VVIP-03', dll.)
+  Offset -16 (dari Time) / +4 (dari PC) : Username   ('LAMELO', 'BON1', 'JR', dll.)
+  Offset +0  (dari Time) / +20 (dari PC): Sisa Waktu ('5j 26m', '30m', '2j 41m', dll.)
 """
 
 import argparse
+from bisect import bisect_right
 import ctypes
 from ctypes import wintypes
 import re
@@ -71,21 +72,15 @@ def parse_time_str_to_seconds(t_str: str) -> int:
     if not t_str:
         return 0
     s = t_str.strip()
-    # Format "5j 26m" atau "2j 0m"
     m_jm = re.match(r"^(\d{1,2})\s*j\s*(\d{1,2})\s*m$", s, re.IGNORECASE)
     if m_jm:
         return int(m_jm.group(1)) * 3600 + int(m_jm.group(2)) * 60
-
-    # Format "30m" atau "6m"
     m_only = re.match(r"^(\d{1,3})\s*m$", s, re.IGNORECASE)
     if m_only:
         return int(m_only.group(1)) * 60
-
-    # Format "6j"
     h_only = re.match(r"^(\d{1,2})\s*j$", s, re.IGNORECASE)
     if h_only:
         return int(h_only.group(1)) * 3600
-
     return 0
 
 
@@ -98,7 +93,6 @@ def is_valid_pc_id(s: str) -> bool:
 
 
 def build_all_faukay_pcs():
-    """Daftar 46 PC standar Faukay E-Sport: 18 VVIP (01-18) & 28 VIP (07-36, skip 24 & 1 nomor lain)."""
     pcs = {}
     for i in range(1, 19):
         pid = f"VVIP-{i:02d}"
@@ -125,15 +119,12 @@ def build_all_faukay_pcs():
     return pcs
 
 
-def extract_live_pcs_from_ram(pid: int, first_run: bool = False):
-    """
-    Membaca seluruh struct kartu PC aktif dari RAM gcbServer.exe.
-    Mengembalikan dict { 'VIP-10': {'status': 'IN_USE', 'remainingSeconds': 1800, 'currentUser': 'LAMELO', ...} }
-    """
+def extract_live_pcs_fast(pid: int, first_run: bool = False):
+    t0 = time.perf_counter()
     kernel32 = ctypes.windll.kernel32
     h_proc = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
     if not h_proc:
-        return []
+        return [], {}
 
     mbi = MEMORY_BASIC_INFORMATION()
     addr = 0
@@ -156,15 +147,10 @@ def extract_live_pcs_from_ram(pid: int, first_run: bool = False):
     finally:
         kernel32.CloseHandle(h_proc)
 
-    region_intervals = [(b, b + len(r), r) for b, r in regions]
+    # Sort regions untuk binary search O(log N) super cepat
+    regions.sort(key=lambda x: x[0])
+    base_addrs = [r[0] for r in regions]
     qstring_cache = {}
-
-    def read_bytes_at_va(va: int, length: int):
-        for b_start, b_end, r_bytes in region_intervals:
-            if b_start <= va and va + length <= b_end:
-                off = va - b_start
-                return r_bytes[off : off + length]
-        return None
 
     def read_qstring_at_ptr(ptr_val: int):
         if ptr_val in qstring_cache:
@@ -172,33 +158,31 @@ def extract_live_pcs_from_ram(pid: int, first_run: bool = False):
         if ptr_val < 0x10000 or ptr_val > 0x7FFF0000:
             return None
 
-        hdr = read_bytes_at_va(ptr_val, 20)
-        if not hdr or len(hdr) < 16:
+        idx = bisect_right(base_addrs, ptr_val) - 1
+        if idx < 0:
             qstring_cache[ptr_val] = None
             return None
 
-        ref, alloc, size, data_ptr = struct.unpack_from("<iiiI", hdr, 0)
-        if not (1 <= ref <= 500000 and 0 <= size <= 120 and size <= alloc <= 4096):
+        b_start, r_bytes = regions[idx]
+        b_end = b_start + len(r_bytes)
+        if ptr_val + 36 > b_end:
             qstring_cache[ptr_val] = None
             return None
 
-        if size == 0:
-            qstring_cache[ptr_val] = ""
-            return ""
-
-        # data_ptr biasanya ptr_val + 18, tapi juga bisa menunjuk ke buffer UTF-16 di heap
-        if not (0x10000 <= data_ptr <= 0x7FFF0000):
+        off = ptr_val - b_start
+        ref, alloc, size, data_ptr = struct.unpack_from("<iiiI", r_bytes, off)
+        if not (1 <= ref <= 500000 and 1 <= size <= 80 and (ptr_val + 14 <= data_ptr <= ptr_val + 28)):
             qstring_cache[ptr_val] = None
             return None
 
-        str_bytes = read_bytes_at_va(data_ptr, size * 2)
-        if not str_bytes or len(str_bytes) < size * 2:
+        str_off = data_ptr - b_start
+        if str_off < 0 or str_off + size * 2 > len(r_bytes):
             qstring_cache[ptr_val] = None
             return None
 
         try:
-            s = str_bytes.decode("utf-16le")
-            if all(32 <= ord(c) <= 126 for c in s):
+            s = r_bytes[str_off : str_off + size * 2].decode("utf-16le", errors="ignore")
+            if s and all(32 <= ord(c) <= 126 for c in s):
                 qstring_cache[ptr_val] = s
                 return s
         except Exception:
@@ -207,106 +191,151 @@ def extract_live_pcs_from_ram(pid: int, first_run: bool = False):
         qstring_cache[ptr_val] = None
         return None
 
-    # Cari semua QStringData header untuk Nama PC ('VIP-07'..'VIP-36', 'VVIP-01'..'VVIP-18')
-    pc_re = re.compile(rb"((?:V\x00)?V\x00I\x00P\x00-\x00\d\x00\d\x00)\x00\x00")
-    pc_hdr_to_name = {}
+    # 1. Cari semua QStringData Waktu ("5j 26m", "30m", "2j 41m") dan PC ("VIP-10", "VVIP-03")
+    time_re = re.compile(rb"(?:[\x30-\x39]\x00[\x30-\x39]?\x00j\x00 \x00)?[\x30-\x39]\x00[\x30-\x39]?\x00m\x00\x00\x00")
+    pc_re = re.compile(rb"(?:V\x00)?V\x00I\x00P\x00-\x00[\x30-\x39]\x00[\x30-\x39]\x00\x00\x00")
+
+    valid_time_hdrs = {}  # hdr_va -> time_str
+    valid_pc_hdrs = {}    # hdr_va -> pc_str
 
     for base, raw in regions:
+        for m in time_re.finditer(raw):
+            str_off = m.start()
+            for delta in (16, 18, 20, 24):
+                if str_off >= delta:
+                    hdr_va = base + str_off - delta
+                    qs = read_qstring_at_ptr(hdr_va)
+                    if qs and is_valid_time_str(qs):
+                        valid_time_hdrs[hdr_va] = qs
+
         for m in pc_re.finditer(raw):
-            str_off = m.start(1)
-            p_str = m.group(1).decode("utf-16le", errors="ignore").upper()
-            if not is_valid_pc_id(p_str):
-                continue
+            str_off = m.start()
             for delta in (16, 18, 20):
                 if str_off >= delta:
                     hdr_va = base + str_off - delta
-                    if read_qstring_at_ptr(hdr_va) == p_str:
-                        pc_hdr_to_name[hdr_va] = p_str
+                    qs = read_qstring_at_ptr(hdr_va)
+                    if qs and is_valid_pc_id(qs):
+                        valid_pc_hdrs[hdr_va] = qs.upper()
 
-    # Scan semua struct di memori yang menunjuk ke pc_hdr_to_name
-    pc_hdr_set = set(pc_hdr_to_name.keys())
-    detected_active = {}  # pc_id -> { remainingSeconds, currentUser, game, rawTime, rawFields }
-    debug_cards = []
+    detected_active = {}
+    debug_matches = []
 
-    for base, raw in regions:
-        limit = len(raw) - 4
-        for off in range(0, limit, 2):
-            val = struct.unpack_from("<I", raw, off)[0]
-            if val not in pc_hdr_set:
-                continue
-
-            pc_id = pc_hdr_to_name[val]
-
-            # Periksa field di struct kartu PC:
-            # Dari dump terbukti:
-            #   [+0]  = PC Name ('VIP-10', 'VVIP-03')
-            #   [+4]  = Username ('LAMELO', 'BON1', 'JR')
-            #   [+20] = Remaining Time ('5j 26m', '30m')
-            #   [+68] = Status hover / Jam ('notHover', '21:11:02')
-            fields = {}
-            for rel in range(-24, 128, 4):
-                pos = off + rel
-                if 0 <= pos <= limit:
-                    sub_ptr = struct.unpack_from("<I", raw, pos)[0]
+    # 2. Gunakan C-speed raw.find() untuk mencari semua struct yang menunjuk ke QString Waktu!
+    for hdr_va, t_str in valid_time_hdrs.items():
+        needle = struct.pack("<I", hdr_va)
+        for base, raw in regions:
+            pos = raw.find(needle)
+            while pos != -1:
+                # Periksa pointer di sekitar posisi waktu ini (-128 s/d +64 byte)
+                nearby = {}
+                start_scan = max(0, pos - 128)
+                end_scan = min(len(raw) - 4, pos + 64)
+                for sub_off in range(start_scan, end_scan, 2):
+                    if (sub_off - pos) % 2 != 0:
+                        continue
+                    sub_ptr = struct.unpack_from("<I", raw, sub_off)[0]
                     qs = read_qstring_at_ptr(sub_ptr)
-                    if qs is not None and qs != "":
-                        fields[rel] = qs
+                    if qs:
+                        nearby[sub_off - pos] = qs
 
-            # Abaikan jika ini adalah tabel konfigurasi MAC Address (yang memiliki '1.8.5' di +12 atau IP di -8)
-            if fields.get(12) == "1.8.5" or (fields.get(-8, "").startswith("192.168.")):
-                continue
-
-            # Cek apakah struct ini memiliki waktu sisa (di sekitar +16, +20, +24, dst.) atau username di +4
-            found_time_str = None
-            for rel_t in (20, 16, 24, 28, 8, 12, 32, 36, 40):
-                cand = fields.get(rel_t, "")
-                if is_valid_time_str(cand):
-                    found_time_str = cand
-                    break
-
-            if not found_time_str:
-                # Cek semua field positif
-                for rel_k, cand in fields.items():
-                    if rel_k > 0 and is_valid_time_str(cand):
-                        found_time_str = cand
+                # Cek apakah ada nama PC di nearby (biasanya di -20 atau -108)
+                found_pc = None
+                found_pc_rel = None
+                for rel_p in (-20, -16, -24, -108, -88, -12, -8, 20, 16):
+                    cand = nearby.get(rel_p, "")
+                    if is_valid_pc_id(cand):
+                        found_pc = cand.upper()
+                        found_pc_rel = rel_p
                         break
 
-            user_cand = fields.get(4, "")
-            # Validasi username (bukan nama PC lain, bukan param1, bukan kata sistem)
-            if (
-                not user_cand
-                or is_valid_pc_id(user_cand)
-                or user_cand.lower() in ("param1", "nothover", "username", "ms shell dlg 2", "wekaweka")
-                or "192.168." in user_cand
-            ):
-                user_cand = ""
+                if not found_pc:
+                    for rel_p, cand in nearby.items():
+                        if is_valid_pc_id(cand):
+                            found_pc = cand.upper()
+                            found_pc_rel = rel_p
+                            break
 
-            if found_time_str or user_cand:
-                rem_sec = parse_time_str_to_seconds(found_time_str) if found_time_str else 0
-                sig_str = f"{pc_id}: user='{user_cand}', time='{found_time_str}' | fields={fields}"
-                if sig_str not in debug_cards:
-                    debug_cards.append(sig_str)
+                if found_pc:
+                    # Username biasanya berada +4 byte setelah posisi PC Name (misal PC di -20 -> User di -16)
+                    user_cand = ""
+                    if found_pc_rel is not None:
+                        u_try = nearby.get(found_pc_rel + 4, "")
+                        if (
+                            u_try
+                            and not is_valid_pc_id(u_try)
+                            and not is_valid_time_str(u_try)
+                            and u_try.lower() not in ("nothover", "member", "prepay", "param1", "wekaweka")
+                        ):
+                            user_cand = u_try
 
-                prev = detected_active.get(pc_id)
-                if not prev or rem_sec > prev["remainingSeconds"] or (user_cand and not prev["currentUser"]):
-                    detected_active[pc_id] = {
-                        "id": pc_id,
-                        "status": "IN_USE",
-                        "remainingSeconds": rem_sec if rem_sec > 0 else (prev["remainingSeconds"] if prev else 1800),
-                        "totalSeconds": max(rem_sec, 7200),
-                        "packageType": f"User: {user_cand}" if user_cand else "Billing CyberIndo",
-                        "currentUser": user_cand or (prev["currentUser"] if prev else None),
-                        "rawTime": found_time_str or "",
-                    }
+                    rem_sec = parse_time_str_to_seconds(t_str)
+                    if rem_sec > 0:
+                        info_line = f"{found_pc} -> Waktu='{t_str}' ({rem_sec}s), User='{user_cand}' | struct={nearby}"
+                        if info_line not in debug_matches:
+                            debug_matches.append(info_line)
 
+                        prev = detected_active.get(found_pc)
+                        if not prev or rem_sec > prev["remainingSeconds"] or (user_cand and not prev["currentUser"]):
+                            detected_active[found_pc] = {
+                                "id": found_pc,
+                                "status": "IN_USE",
+                                "remainingSeconds": rem_sec,
+                                "totalSeconds": max(rem_sec, 7200),
+                                "packageType": f"User: {user_cand}" if user_cand else "Billing CyberIndo",
+                                "currentUser": user_cand or (prev["currentUser"] if prev else None),
+                                "rawTime": t_str,
+                            }
+
+                pos = raw.find(needle, pos + 2)
+
+    # 3. Tambahan: Gunakan C-speed raw.find() pada QString PC untuk menangkap PC yang baru login
+    for hdr_va, pc_id in valid_pc_hdrs.items():
+        needle = struct.pack("<I", hdr_va)
+        for base, raw in regions:
+            pos = raw.find(needle)
+            while pos != -1:
+                # Cek offset +4 (Username) dan +20 (Waktu)
+                if pos + 24 <= len(raw):
+                    u_ptr = struct.unpack_from("<I", raw, pos + 4)[0]
+                    t_ptr = struct.unpack_from("<I", raw, pos + 20)[0]
+                    u_str = read_qstring_at_ptr(u_ptr) or ""
+                    t_str = read_qstring_at_ptr(t_ptr) or ""
+
+                    if is_valid_time_str(t_str):
+                        rem_sec = parse_time_str_to_seconds(t_str)
+                        clean_u = (
+                            u_str
+                            if (
+                                u_str
+                                and not is_valid_pc_id(u_str)
+                                and u_str.lower() not in ("param1", "wekaweka", "nothover", "bon1" if False else "")
+                                and ":" not in u_str
+                            )
+                            else ""
+                        )
+                        if rem_sec > 0:
+                            prev = detected_active.get(pc_id)
+                            if not prev or rem_sec > prev["remainingSeconds"]:
+                                detected_active[pc_id] = {
+                                    "id": pc_id,
+                                    "status": "IN_USE",
+                                    "remainingSeconds": rem_sec,
+                                    "totalSeconds": max(rem_sec, 7200),
+                                    "packageType": f"User: {clean_u}" if clean_u else "Billing CyberIndo",
+                                    "currentUser": clean_u or (prev["currentUser"] if prev else None),
+                                    "rawTime": t_str,
+                                }
+                pos = raw.find(needle, pos + 2)
+
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
     if first_run:
-        print(f"\n[INFO] Ditemukan {len(debug_cards)} struct kartu PC aktif di memori:")
-        for dc in debug_cards[:30]:
-            print("  ->", dc[:150])
+        print(f"[FAST-SCAN] Selesai dalam {elapsed_ms} ms | Terdeteksi {len(detected_active)} PC Aktif:")
+        for dm in debug_matches[:25]:
+            print("  ->", dm[:140])
 
     fleet = build_all_faukay_pcs()
     for pc_id, active_info in detected_active.items():
-        if pc_id in fleet and active_info["remainingSeconds"] > 0:
+        if pc_id in fleet:
             fleet[pc_id] = {
                 "id": pc_id,
                 "status": "IN_USE",
@@ -316,11 +345,11 @@ def extract_live_pcs_from_ram(pid: int, first_run: bool = False):
                 "currentUser": active_info["currentUser"],
             }
 
-    return list(fleet.values()), detected_active
+    return list(fleet.values()), detected_active, elapsed_ms
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Faukay E-Sport CyberIndo Live Sync Agent")
+    parser = argparse.ArgumentParser(description="Faukay E-Sport CyberIndo Ultra-Fast Sync Agent")
     parser.add_argument("--url", default="https://faukayesport-fky.vercel.app/api/pcs", help="URL API Website")
     parser.add_argument("--secret", default="", help="Secret key FAUKAY_SYNC_SECRET")
     parser.add_argument("--interval", type=int, default=4, help="Interval update dalam detik")
@@ -329,7 +358,7 @@ def main():
     api_url = normalize_api_url(args.url)
 
     print("============================================================")
-    print(" FAUKAY E-SPORT — CYBERINDO LIVE SYNC AGENT (RAM TELEMETRY)")
+    print(" FAUKAY E-SPORT — CYBERINDO LIVE SYNC AGENT (TURBO RAM)")
     print(f" Target API : {api_url}")
     print(f" Interval   : {args.interval} detik")
     print("============================================================")
@@ -343,7 +372,7 @@ def main():
             continue
 
         try:
-            pcs_payload, active_map = extract_live_pcs_from_ram(pid, first_run=first_run)
+            pcs_payload, active_map, scan_ms = extract_live_pcs_fast(pid, first_run=first_run)
             first_run = False
 
             res = requests.post(
@@ -358,16 +387,13 @@ def main():
             )
 
             active_summary = ", ".join(
-                f"{k}({v.get('currentUser') or '-'} {v.get('rawTime') or ''})".strip()
+                f"{k}({v.get('currentUser') or ''} {v.get('rawTime') or ''})".strip()
                 for k, v in sorted(active_map.items())
-                if v["remainingSeconds"] > 0
             )
             print(
-                f"\n[{time.strftime('%H:%M:%S')}] SYNC OK (HTTP {res.status_code}) -> "
-                f"{len(active_map)} PC Aktif dari {len(pcs_payload)} Total PC"
+                f"[{time.strftime('%H:%M:%S')}] SYNC OK (HTTP {res.status_code} | {scan_ms}ms) -> "
+                f"{len(active_map)} PC Aktif: {active_summary}"
             )
-            if active_summary:
-                print(f"  PC Aktif: {active_summary}")
         except Exception as err:
             print(f"[{time.strftime('%H:%M:%S')}] [ERROR] {err}")
 
