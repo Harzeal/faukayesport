@@ -1,37 +1,26 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import "./globals.css";
+import type { Metadata } from 'next';
+import './globals.css';
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-export const metadata = {
-  title: 'Faukay Esport',
-  description: 'Sistem Manajemen Inventaris Esport',
-  verification: {
-    // HAPUS tag <meta... />, SISAKAN kode uniknya saja seperti ini:
-    google: 'Qy0DRaSCD9UFGrQhSWz5r8-XsKWQVBo7UlvYYLGMDyk', 
+export const metadata: Metadata = {
+  title: 'FAUKAY E-SPORT | Live PC & Billing Monitor',
+  description:
+    'Cek ketersediaan kursi PC VVIP & VIP beserta sisa waktu billing CyberIndo secara real-time di Warnet Faukay E-Sport.',
+  icons: {
+    icon: '/logo.png',
   },
-}
+  verification: {
+    google: 'Qy0DRaSCD9UFGrQhSWz5r8-XsKWQVBo7UlvYYLGMDyk',
+  },
+};
+
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
-      </body>
+    <html lang="id">
+      <body>{children}</body>
     </html>
   );
 }
