@@ -1,11 +1,8 @@
 """
-FAUKAY E-SPORT — CyberIndo Pro Server v1.8.5 (gcbServer.exe) Ultra-Fast Live Sync Agent
-=======================================================================================
-Kecepatan scan: ~0.2 detik menggunakan C-level bytes.find() & bisect!
-Membaca langsung C++ UI Card Struct di memori (RAM) gcbServer.exe:
-  Offset -20 (dari Time) / +0 (dari PC) : PC Name    ('VIP-10', 'VVIP-03', dll.)
-  Offset -16 (dari Time) / +4 (dari PC) : Username   ('LAMELO', 'BON1', 'JR', dll.)
-  Offset +0  (dari Time) / +20 (dari PC): Sisa Waktu ('5j 26m', '30m', '2j 41m', dll.)
+FAUKAY E-SPORT — CyberIndo Pro Server v1.8.5 (gcbServer.exe) Live Sync Agent
+============================================================================
+Memindai Private Read-Write Heap (MEM_PRIVATE + PAGE_READWRITE) menggunakan
+buf.find() hanya pada QString Waktu aktif (~0.5 detik per siklus!).
 """
 
 import argparse
@@ -24,7 +21,8 @@ warnings.filterwarnings("ignore")
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_READ = 0x0010
 MEM_COMMIT = 0x1000
-READABLE_PAGES = (0x02, 0x04, 0x08, 0x20, 0x40)
+MEM_PRIVATE = 0x20000
+PAGE_READWRITE = 0x04
 
 
 class MEMORY_BASIC_INFORMATION(ctypes.Structure):
@@ -119,35 +117,43 @@ def build_all_faukay_pcs():
     return pcs
 
 
-def extract_live_pcs_fast(pid: int, first_run: bool = False):
+def extract_live_pcs_heap(pid: int, first_run: bool = False):
     t0 = time.perf_counter()
     kernel32 = ctypes.windll.kernel32
     h_proc = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
     if not h_proc:
-        return [], {}
+        return [], {}, 0
 
     mbi = MEMORY_BASIC_INFORMATION()
     addr = 0
     max_addr = 0x7FFFFFFF
     regions = []
+    total_bytes = 0
 
     try:
         while addr < max_addr:
             res = kernel32.VirtualQueryEx(h_proc, ctypes.c_void_p(addr), ctypes.byref(mbi), ctypes.sizeof(mbi))
             if not res:
                 break
-            if mbi.State == MEM_COMMIT and mbi.Protect in READABLE_PAGES and 0 < mbi.RegionSize <= 32 * 1024 * 1024:
+            # Hanya baca Private Read-Write Heap (tempat seluruh QString & UI Card Struct disimpan)
+            if (
+                mbi.State == MEM_COMMIT
+                and mbi.Protect == PAGE_READWRITE
+                and mbi.Type == MEM_PRIVATE
+                and 0 < mbi.RegionSize <= 16 * 1024 * 1024
+            ):
                 buf = ctypes.create_string_buffer(mbi.RegionSize)
                 bytes_read = ctypes.c_size_t(0)
                 if kernel32.ReadProcessMemory(
                     h_proc, ctypes.c_void_p(mbi.BaseAddress), buf, mbi.RegionSize, ctypes.byref(bytes_read)
                 ):
-                    regions.append((mbi.BaseAddress, buf.raw[: bytes_read.value]))
+                    chunk = buf.raw[: bytes_read.value]
+                    regions.append((mbi.BaseAddress, chunk))
+                    total_bytes += len(chunk)
             addr = (mbi.BaseAddress or 0) + mbi.RegionSize
     finally:
         kernel32.CloseHandle(h_proc)
 
-    # Sort regions untuk binary search O(log N) super cepat
     regions.sort(key=lambda x: x[0])
     base_addrs = [r[0] for r in regions]
     qstring_cache = {}
@@ -164,8 +170,7 @@ def extract_live_pcs_fast(pid: int, first_run: bool = False):
             return None
 
         b_start, r_bytes = regions[idx]
-        b_end = b_start + len(r_bytes)
-        if ptr_val + 36 > b_end:
+        if ptr_val < b_start or ptr_val + 36 > b_start + len(r_bytes):
             qstring_cache[ptr_val] = None
             return None
 
@@ -191,57 +196,48 @@ def extract_live_pcs_fast(pid: int, first_run: bool = False):
         qstring_cache[ptr_val] = None
         return None
 
-    # 1. Cari semua QStringData Waktu ("5j 26m", "30m", "2j 41m") dan PC ("VIP-10", "VVIP-03")
-    time_re = re.compile(rb"(?:[\x30-\x39]\x00[\x30-\x39]?\x00j\x00 \x00)?[\x30-\x39]\x00[\x30-\x39]?\x00m\x00\x00\x00")
-    pc_re = re.compile(rb"(?:V\x00)?V\x00I\x00P\x00-\x00[\x30-\x39]\x00[\x30-\x39]\x00\x00\x00")
-
-    valid_time_hdrs = {}  # hdr_va -> time_str
-    valid_pc_hdrs = {}    # hdr_va -> pc_str
+    # Persis seperti regex di commit 00b7c34 yang terbukti cepat & akurat:
+    time_re = re.compile(rb"\x00((?:\d\x00\d?\x00j\x00 \x00)?\d\x00\d?\x00m\x00)\x00\x00")
+    valid_time_hdrs = {}  # hdr_va -> actual full QString time (e.g. '5j 26m', '30m')
 
     for base, raw in regions:
         for m in time_re.finditer(raw):
-            str_off = m.start()
+            str_off = m.start(1)
             for delta in (16, 18, 20, 24):
                 if str_off >= delta:
                     hdr_va = base + str_off - delta
-                    qs = read_qstring_at_ptr(hdr_va)
-                    if qs and is_valid_time_str(qs):
-                        valid_time_hdrs[hdr_va] = qs
+                    actual_qs = read_qstring_at_ptr(hdr_va)
+                    if actual_qs and is_valid_time_str(actual_qs):
+                        valid_time_hdrs[hdr_va] = actual_qs
 
-        for m in pc_re.finditer(raw):
-            str_off = m.start()
-            for delta in (16, 18, 20):
-                if str_off >= delta:
-                    hdr_va = base + str_off - delta
-                    qs = read_qstring_at_ptr(hdr_va)
-                    if qs and is_valid_pc_id(qs):
-                        valid_pc_hdrs[hdr_va] = qs.upper()
+    if first_run:
+        print(
+            f"[HEAP-INFO] Membaca {len(regions)} region heap ({total_bytes // (1024*1024)} MB), "
+            f"ditemukan {len(valid_time_hdrs)} QString Waktu valid. Mencari struct PC...",
+            flush=True,
+        )
 
     detected_active = {}
     debug_matches = []
 
-    # 2. Gunakan C-speed raw.find() untuk mencari semua struct yang menunjuk ke QString Waktu!
+    # Gunakan C-speed raw.find(needle) HANYA pada valid_time_hdrs (~25 item -> < 0.8 detik!)
     for hdr_va, t_str in valid_time_hdrs.items():
         needle = struct.pack("<I", hdr_va)
         for base, raw in regions:
             pos = raw.find(needle)
             while pos != -1:
-                # Periksa pointer di sekitar posisi waktu ini (-128 s/d +64 byte)
                 nearby = {}
-                start_scan = max(0, pos - 128)
-                end_scan = min(len(raw) - 4, pos + 64)
+                start_scan = max(0, pos - 120)
+                end_scan = min(len(raw) - 4, pos + 60)
                 for sub_off in range(start_scan, end_scan, 2):
-                    if (sub_off - pos) % 2 != 0:
-                        continue
                     sub_ptr = struct.unpack_from("<I", raw, sub_off)[0]
                     qs = read_qstring_at_ptr(sub_ptr)
                     if qs:
                         nearby[sub_off - pos] = qs
 
-                # Cek apakah ada nama PC di nearby (biasanya di -20 atau -108)
                 found_pc = None
                 found_pc_rel = None
-                for rel_p in (-20, -16, -24, -108, -88, -12, -8, 20, 16):
+                for rel_p in (-20, -108, -16, -24, -88, 20):
                     cand = nearby.get(rel_p, "")
                     if is_valid_pc_id(cand):
                         found_pc = cand.upper()
@@ -256,7 +252,6 @@ def extract_live_pcs_fast(pid: int, first_run: bool = False):
                             break
 
                 if found_pc:
-                    # Username biasanya berada +4 byte setelah posisi PC Name (misal PC di -20 -> User di -16)
                     user_cand = ""
                     if found_pc_rel is not None:
                         u_try = nearby.get(found_pc_rel + 4, "")
@@ -270,9 +265,9 @@ def extract_live_pcs_fast(pid: int, first_run: bool = False):
 
                     rem_sec = parse_time_str_to_seconds(t_str)
                     if rem_sec > 0:
-                        info_line = f"{found_pc} -> Waktu='{t_str}' ({rem_sec}s), User='{user_cand}' | struct={nearby}"
-                        if info_line not in debug_matches:
-                            debug_matches.append(info_line)
+                        sig = f"{found_pc}: Waktu='{t_str}', User='{user_cand}'"
+                        if sig not in debug_matches:
+                            debug_matches.append(sig)
 
                         prev = detected_active.get(found_pc)
                         if not prev or rem_sec > prev["remainingSeconds"] or (user_cand and not prev["currentUser"]):
@@ -288,50 +283,11 @@ def extract_live_pcs_fast(pid: int, first_run: bool = False):
 
                 pos = raw.find(needle, pos + 2)
 
-    # 3. Tambahan: Gunakan C-speed raw.find() pada QString PC untuk menangkap PC yang baru login
-    for hdr_va, pc_id in valid_pc_hdrs.items():
-        needle = struct.pack("<I", hdr_va)
-        for base, raw in regions:
-            pos = raw.find(needle)
-            while pos != -1:
-                # Cek offset +4 (Username) dan +20 (Waktu)
-                if pos + 24 <= len(raw):
-                    u_ptr = struct.unpack_from("<I", raw, pos + 4)[0]
-                    t_ptr = struct.unpack_from("<I", raw, pos + 20)[0]
-                    u_str = read_qstring_at_ptr(u_ptr) or ""
-                    t_str = read_qstring_at_ptr(t_ptr) or ""
-
-                    if is_valid_time_str(t_str):
-                        rem_sec = parse_time_str_to_seconds(t_str)
-                        clean_u = (
-                            u_str
-                            if (
-                                u_str
-                                and not is_valid_pc_id(u_str)
-                                and u_str.lower() not in ("param1", "wekaweka", "nothover", "bon1" if False else "")
-                                and ":" not in u_str
-                            )
-                            else ""
-                        )
-                        if rem_sec > 0:
-                            prev = detected_active.get(pc_id)
-                            if not prev or rem_sec > prev["remainingSeconds"]:
-                                detected_active[pc_id] = {
-                                    "id": pc_id,
-                                    "status": "IN_USE",
-                                    "remainingSeconds": rem_sec,
-                                    "totalSeconds": max(rem_sec, 7200),
-                                    "packageType": f"User: {clean_u}" if clean_u else "Billing CyberIndo",
-                                    "currentUser": clean_u or (prev["currentUser"] if prev else None),
-                                    "rawTime": t_str,
-                                }
-                pos = raw.find(needle, pos + 2)
-
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     if first_run:
-        print(f"[FAST-SCAN] Selesai dalam {elapsed_ms} ms | Terdeteksi {len(detected_active)} PC Aktif:")
-        for dm in debug_matches[:25]:
-            print("  ->", dm[:140])
+        print(f"[FAST-SCAN] Selesai dalam {elapsed_ms} ms | Terdeteksi {len(detected_active)} PC Aktif:", flush=True)
+        for dm in debug_matches[:30]:
+            print("  ->", dm, flush=True)
 
     fleet = build_all_faukay_pcs()
     for pc_id, active_info in detected_active.items():
@@ -349,7 +305,7 @@ def extract_live_pcs_fast(pid: int, first_run: bool = False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Faukay E-Sport CyberIndo Ultra-Fast Sync Agent")
+    parser = argparse.ArgumentParser(description="Faukay E-Sport CyberIndo Fast Heap Sync Agent")
     parser.add_argument("--url", default="https://faukayesport-fky.vercel.app/api/pcs", help="URL API Website")
     parser.add_argument("--secret", default="", help="Secret key FAUKAY_SYNC_SECRET")
     parser.add_argument("--interval", type=int, default=4, help="Interval update dalam detik")
@@ -357,22 +313,22 @@ def main():
 
     api_url = normalize_api_url(args.url)
 
-    print("============================================================")
-    print(" FAUKAY E-SPORT — CYBERINDO LIVE SYNC AGENT (TURBO RAM)")
-    print(f" Target API : {api_url}")
-    print(f" Interval   : {args.interval} detik")
-    print("============================================================")
+    print("============================================================", flush=True)
+    print(" FAUKAY E-SPORT — CYBERINDO LIVE SYNC AGENT (FAST HEAP)", flush=True)
+    print(f" Target API : {api_url}", flush=True)
+    print(f" Interval   : {args.interval} detik", flush=True)
+    print("============================================================", flush=True)
 
     first_run = True
     while True:
         pid = get_gcbserver_pid()
         if not pid:
-            print(f"[{time.strftime('%H:%M:%S')}] [WARN] gcbServer.exe belum berjalan. Menunggu...")
+            print(f"[{time.strftime('%H:%M:%S')}] [WARN] gcbServer.exe belum berjalan...", flush=True)
             time.sleep(args.interval)
             continue
 
         try:
-            pcs_payload, active_map, scan_ms = extract_live_pcs_fast(pid, first_run=first_run)
+            pcs_payload, active_map, scan_ms = extract_live_pcs_heap(pid, first_run=first_run)
             first_run = False
 
             res = requests.post(
@@ -392,10 +348,11 @@ def main():
             )
             print(
                 f"[{time.strftime('%H:%M:%S')}] SYNC OK (HTTP {res.status_code} | {scan_ms}ms) -> "
-                f"{len(active_map)} PC Aktif: {active_summary}"
+                f"{len(active_map)} PC Aktif: {active_summary}",
+                flush=True,
             )
         except Exception as err:
-            print(f"[{time.strftime('%H:%M:%S')}] [ERROR] {err}")
+            print(f"[{time.strftime('%H:%M:%S')}] [ERROR] {err}", flush=True)
 
         time.sleep(args.interval)
 
